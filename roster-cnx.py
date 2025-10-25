@@ -2,26 +2,45 @@ from ortools.sat.python import cp_model
 import pandas as pd
 
 def build_and_solve():
-    # ---- INPUTS ----
-    W = 5
-    weeks = list(range(1, W + 1))
-    SITES = ["QTSC1", "QTSC9", "FLE", "TV", "OH"]
-    PEOPLE = [
-        "Cong", "Bao", "Huy",
-        "Thang", "Lam", "Liem", "Thinh", "Mi", "KietDinh",
-        "Hoa", "Khai", "Duong",
-        "Hoang", "KietLat",
-    ]
-    site_of = {
-        "Cong": "QTSC1", "Bao": "QTSC1", "Huy": "QTSC1",
-        "Thang": "QTSC9", "Lam": "QTSC9", "Liem": "QTSC9", "Thinh": "QTSC9", "Mi": "QTSC9", "KietDinh": "QTSC9",
-        "Hoa": "FLE", "Khai": "FLE", "Duong": "FLE",
-        "Hoang": "TV", "KietLat": "OH",
-    }
-    single_site = {"QTSC1": False, "QTSC9": False, "FLE": False, "TV": True, "OH": True}
+    # ---- INPUT: số tuần trong tháng ----
+    try:
+        W = int(input("Nhập số tuần trong tháng (4 hoặc 5): ").strip())
+        if W not in [4, 5]:
+            print("Giá trị không hợp lệ, mặc định là 4 tuần.")
+            W = 4
+    except:
+        W = 4
 
-    cannot_sun = {"Thinh", "Mi", "Hoang", "KietLat"}
-    must_sun = {"Duong", "KietDinh"}
+    # ---- USER DATA CONFIG ----
+    USERS = [
+        {"name": "Cong", "site": "QTSC1", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "Bao", "site": "QTSC1", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": True},
+        {"name": "Huy", "site": "QTSC1", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "Thang", "site": "QTSC9", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "Lam", "site": "QTSC9", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "Liem", "site": "QTSC9", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "Thinh", "site": "QTSC9", "can_sun": False, "can_alone": False, "must_sun": False, "worked_last_month": True},
+        {"name": "Mi", "site": "QTSC9", "can_sun": False, "can_alone": False, "must_sun": False, "worked_last_month": False},
+        {"name": "KietDinh", "site": "QTSC9", "can_sun": True, "can_alone": True, "must_sun": True, "worked_last_month": False},
+        {"name": "Hoa", "site": "FLE", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": True},
+        {"name": "Khai", "site": "FLE", "can_sun": True, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "Duong", "site": "FLE", "can_sun": True, "can_alone": True, "must_sun": True, "worked_last_month": True},
+        {"name": "Hoang", "site": "TV", "can_sun": False, "can_alone": True, "must_sun": False, "worked_last_month": False},
+        {"name": "KietLat", "site": "OH", "can_sun": False, "can_alone": True, "must_sun": False, "worked_last_month": True},
+    ]
+
+    weeks = list(range(1, W + 1))
+    SITES = sorted({u["site"] for u in USERS})
+
+    # Generate sets from USERS
+    PEOPLE = [u["name"] for u in USERS]
+    site_of = {u["name"]: u["site"] for u in USERS}
+    cannot_sun = {u["name"] for u in USERS if not u["can_sun"]}
+    must_sun = {u["name"] for u in USERS if u["must_sun"]}
+    worked_last_month = {u["name"] for u in USERS if u["worked_last_month"]}
+    cannot_work_alone = {u["name"] for u in USERS if not u["can_alone"]}
+
+    single_site = {s: (sum(1 for u in USERS if u["site"] == s) == 1) for s in SITES}
 
     model = cp_model.CpModel()
     target_days = 2 if W == 4 else 3
@@ -44,19 +63,20 @@ def build_and_solve():
 
         for s in SITES:
             members = [p for p in PEOPLE if site_of[p] == s]
-            if len(members) == 1 and single_site[s]:
+            if single_site[s]:
                 continue
             model.Add(sum(Sat[(p, w)] for p in members) >= 1)
 
-        # Ensure Thinh and Mi never alone in their site on Sat
-        for p in ["Thinh", "Mi"]:
+        for p in cannot_work_alone:
             model.Add(sum(Sat[(q, w)] for q in PEOPLE if site_of[q] == site_of[p]) >= 2)
 
-        # New rule: if OH off then TV must work, and vice versa
         site_oh = [p for p in PEOPLE if site_of[p] == "OH"]
         site_tv = [p for p in PEOPLE if site_of[p] == "TV"]
         model.Add(sum(Sat[(p, w)] + Sun[(p, w)] for p in site_oh) +
                   sum(Sat[(p, w)] + Sun[(p, w)] for p in site_tv) >= 1)
+
+    for p in worked_last_month:
+        model.Add(Sat[(p, 1)] + Sun[(p, 1)] == 0)
 
     m = max(1, len(must_sun))
     base = len(weeks) // m
@@ -95,32 +115,32 @@ def build_and_solve():
         print('No feasible solution with given constraints.')
         return
 
-    # Build unified table
+    # Build unified table with SatCount and SunCount
     data = []
     for p in PEOPLE:
         record = {"Site": site_of[p], "Name": p}
-        total = 0
+        sat_count = sum(solver.Value(Sat[(p, w)]) for w in weeks)
+        sun_count = sum(solver.Value(Sun[(p, w)]) for w in weeks)
+        total = sat_count + sun_count
         for w in weeks:
             sat = solver.Value(Sat[(p, w)])
             sun = solver.Value(Sun[(p, w)])
             if sat and sun:
                 record[f"Week{w}"] = 'Sat+Sun'
-                total += 2
             elif sat:
                 record[f"Week{w}"] = 'Sat'
-                total += 1
             elif sun:
                 record[f"Week{w}"] = 'Sun'
-                total += 1
             else:
                 record[f"Week{w}"] = ''
+        record["SatCount"] = sat_count
+        record["SunCount"] = sun_count
         record["Total"] = total
         data.append(record)
 
     df = pd.DataFrame(data)
     df = df.sort_values(["Site", "Name"])
 
-    # Print combined table with site separators
     print("\n=== Detailed Weekly Schedule (All Sites) ===")
     current_site = None
     for idx, row in df.iterrows():
@@ -130,7 +150,7 @@ def build_and_solve():
         print(f"{row['Name']:<10}", end=' | ')
         for w in weeks:
             print(f"{row[f'Week{w}'] or '-':<7}", end=' | ')
-        print(f" {row['Total']}")
+        print(f" Sat:{row['SatCount']:<2} | Sun:{row['SunCount']:<2} | Total:{row['Total']}")
 
 if __name__ == '__main__':
     build_and_solve()
